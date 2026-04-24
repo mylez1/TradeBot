@@ -1,0 +1,15 @@
+.env
+*.env
+
+logs/*
+!logs/.gitkeep
+
+node_modules/
+**/node_modules/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+
+.DS_Store
+

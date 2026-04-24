@@ -1,0 +1,24 @@
+{
+  "name": "early-bird-engine",
+  "module": "index.ts",
+  "type": "module",
+  "scripts": {
+    "check": "tsc -b --noEmit",
+    "postinstall": "node scripts/patch-clob-client-amounts.mjs"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "prettier": "^3.8.1"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@ethersproject/wallet": "^5.8.0",
+    "@js-sdsl/ordered-map": "^4.4.2",
+    "@polymarket/builder-relayer-client": "^0.0.8",
+    "@polymarket/clob-client": "^5.8.1",
+    "commander": "^14.0.3",
+    "ethers": "^6"
+  }
+}
