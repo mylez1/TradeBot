@@ -71,42 +71,61 @@ async def main() -> None:
         while True:
             # ---- Discover a fresh market ----
             while True:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    cwd=str(trade_engine_dir),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-
-                try:
-                    stdout_b, stderr_b = await asyncio.wait_for(
-                        proc.communicate(), timeout=5.0
-                    )
-                except TimeoutError:
-                    proc.kill()
-                    await proc.communicate()
-                    raise RuntimeError(f"discover wrapper timed out (>5s): {cmd!r}")
-
-                stdout = (stdout_b or b"").decode("utf-8", errors="replace").strip()
-                stderr = (stderr_b or b"").decode("utf-8", errors="replace").strip()
-
-                if stderr:
-                    print(stderr, file=sys.stderr)
-
-                if proc.returncode != 0:
-                    raise RuntimeError(
-                        f"discover wrapper failed with code {proc.returncode}: {cmd!r}"
+                data = None
+                for attempt in range(1, 4):
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        cwd=str(trade_engine_dir),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
                     )
 
-                if not stdout:
-                    raise RuntimeError("discover wrapper returned empty stdout")
+                    try:
+                        stdout_b, stderr_b = await asyncio.wait_for(
+                            proc.communicate(), timeout=15.0
+                        )
+                    except TimeoutError:
+                        proc.kill()
+                        await proc.communicate()
+                        print(
+                            f"Discover timeout attempt {attempt}/3",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        if attempt < 3:
+                            await asyncio.sleep(1.0)
+                            continue
+                        print("Discover failed after retries", file=sys.stderr, flush=True)
+                        await asyncio.sleep(1.0)
+                        break
 
-                try:
-                    data = json.loads(stdout)
-                except json.JSONDecodeError as e:
-                    print("RAW STDOUT (invalid JSON):", file=sys.stderr)
-                    print(stdout, file=sys.stderr)
-                    raise RuntimeError(f"failed to parse JSON from wrapper stdout: {e}") from e
+                    stdout = (stdout_b or b"").decode("utf-8", errors="replace").strip()
+                    stderr = (stderr_b or b"").decode("utf-8", errors="replace").strip()
+
+                    if stderr:
+                        print(stderr, file=sys.stderr)
+
+                    if proc.returncode != 0:
+                        raise RuntimeError(
+                            f"discover wrapper failed with code {proc.returncode}: {cmd!r}"
+                        )
+
+                    if not stdout:
+                        raise RuntimeError("discover wrapper returned empty stdout")
+
+                    try:
+                        data = json.loads(stdout)
+                    except json.JSONDecodeError as e:
+                        print("RAW STDOUT (invalid JSON):", file=sys.stderr)
+                        print(stdout, file=sys.stderr)
+                        raise RuntimeError(
+                            f"failed to parse JSON from wrapper stdout: {e}"
+                        ) from e
+
+                    break
+
+                if data is None:
+                    continue
 
                 now_ts = time.time()
                 market_age = now_ts - (float(data["open_time_ms"]) / 1000.0)
