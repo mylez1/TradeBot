@@ -6,6 +6,7 @@ import sys
 import time
 
 import config
+from logger import log_trade
 
 # Must match @polymarket/clob-client ROUNDING_CONFIG *.size (all ticks use size=2 → 0.01 share step).
 _SHARE_STEP = 0.01
@@ -71,10 +72,16 @@ async def handle_decision(
     state.setdefault("position", None)
     state.setdefault("pnl", 0.0)
     state.setdefault("cooldown_until", 0.0)
+    state.setdefault("entry_cooldown_until", 0.0)
+    state.setdefault("exit_cooldown_until", 0.0)
     state.setdefault("trades", 0)
+    state.setdefault("_signal_ctx", {})
 
     position = state["position"]
     cooldown_until = float(state["cooldown_until"])
+    entry_cooldown_until = float(state["entry_cooldown_until"])
+    exit_cooldown_until = float(state["exit_cooldown_until"])
+    signal_ctx = state.get("_signal_ctx") if isinstance(state.get("_signal_ctx"), dict) else {}
 
     # --- Helpers to read best bid/ask ---
     def best_ask(direction: str) -> float | None:
@@ -109,6 +116,9 @@ async def handle_decision(
 
     # --- Exit logic ---
     if position is not None:
+        if now_ts <= exit_cooldown_until:
+            return
+
         # Hold if < 60s to resolution
         resolution_s = float(market["resolution_time_ms"]) / 1000.0
         if resolution_s - now_ts < 60.0:
@@ -118,8 +128,9 @@ async def handle_decision(
         if cur is None:
             return
 
-        tp = 0.75
-        sl = 0.35
+        entry_px = float(position["entry_price"])
+        tp = min(0.99, entry_px + 0.05)
+        sl = max(0.01, entry_px - 0.05)
         should_exit = cur >= tp or cur <= sl
         if should_exit:
             token_id = position["token_id"]
@@ -146,13 +157,42 @@ async def handle_decision(
                     file=sys.stderr,
                     flush=True,
                 )
+                state["exit_cooldown_until"] = now_ts + 2.0
                 return
 
             entry = float(position["entry_price"])
             pnl = (px_exit - entry) * size
             state["pnl"] = float(state["pnl"]) + pnl
             state["position"] = None
-            state["cooldown_until"] = now_ts + float(config.COOLDOWN_SECONDS)
+            state["cooldown_until"] = now_ts + 30.0
+            state["exit_cooldown_until"] = 0.0
+            try:
+                market_id = str(market.get("market_id", ""))
+                hold_seconds = max(0.0, float(now_ts) - float(position.get("entry_time", now_ts)))
+                log_trade(
+                    {
+                        "ts": float(now_ts),
+                        "mode": mode,
+                        "event": "EXIT",
+                        "market_id": market_id,
+                        "direction": str(position["direction"]),
+                        "entry_price": float(entry),
+                        "exit_price": float(px_exit),
+                        "size": float(size),
+                        "pnl": float(pnl),
+                        "result": "WIN" if pnl >= 0 else "LOSS",
+                        "hold_seconds": float(hold_seconds),
+                        "divergence": float(
+                            position.get("divergence", signal_ctx.get("divergence", 0.0))
+                        ),
+                        "imbalance": float(
+                            position.get("imbalance", signal_ctx.get("imbalance", 0.0))
+                        ),
+                        "age": float(position.get("age", signal_ctx.get("age", 0.0))),
+                    }
+                )
+            except Exception:
+                pass
             print(
                 f"EXIT {position['direction']} @{px_exit:.2f} (size={size:.2f}) pnl={pnl:+.2f} total_pnl={state['pnl']:+.2f} orderId={placed.get('orderId')}",
                 flush=True,
@@ -160,10 +200,14 @@ async def handle_decision(
         return
 
     # --- Entry logic ---
+    if now_ts < cooldown_until:
+        return
+
     if (
         decision.get("action") == "ENTER"
-        and position is None
+        and state["position"] is None
         and now_ts > cooldown_until
+        and now_ts > entry_cooldown_until
     ):
         if int(state["trades"]) >= int(config.MAX_TRADES):
             return
@@ -204,18 +248,41 @@ async def handle_decision(
 
         size = lower
 
-        resp = await _call_order_wrapper(
-            mode,
-            [
-                {
-                    "tokenId": token_id,
-                    "action": "buy",
-                    "price": px,
-                    "shares": size,
-                    "orderType": "FOK",
-                }
-            ],
-        )
+        # After ANY entry attempt (success or failure), block new entries briefly.
+        state["entry_cooldown_until"] = now_ts + 5.0
+
+        try:
+            resp = await _call_order_wrapper(
+                mode,
+                [
+                    {
+                        "tokenId": token_id,
+                        "action": "buy",
+                        "price": px,
+                        "shares": size,
+                        "orderType": "FOK",
+                    }
+                ],
+            )
+        except Exception as e:
+            print(
+                f"[{time.strftime('%H:%M:%S')}] ENTRY FAILED: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                log_trade(
+                    {
+                        "ts": float(now_ts),
+                        "mode": mode,
+                        "event": "ENTRY_FAILED",
+                        "reason": str(e),
+                    }
+                )
+            except Exception:
+                pass
+            return
+
         placed = (resp.get("placed") or [{}])[0]
         if not placed.get("success") or not placed.get("orderId"):
             print(
@@ -223,6 +290,17 @@ async def handle_decision(
                 file=sys.stderr,
                 flush=True,
             )
+            try:
+                log_trade(
+                    {
+                        "ts": float(now_ts),
+                        "mode": mode,
+                        "event": "ENTRY_FAILED",
+                        "reason": str(placed.get("errorMsg", "")),
+                    }
+                )
+            except Exception:
+                pass
             return
 
         state["position"] = {
@@ -231,10 +309,91 @@ async def handle_decision(
             "entry_price": float(px),
             "size": float(size),
             "entry_time": float(now_ts),
+            "divergence": float(signal_ctx.get("divergence", 0.0)),
+            "imbalance": float(signal_ctx.get("imbalance", 0.0)),
+            "age": float(signal_ctx.get("age", 0.0)),
         }
         state["trades"] = int(state["trades"]) + 1
+        try:
+            market_id = str(market.get("market_id", ""))
+            log_trade(
+                {
+                    "ts": float(now_ts),
+                    "mode": mode,
+                    "event": "ENTRY",
+                    "market_id": market_id,
+                    "direction": direction,
+                    "price": float(px),
+                    "size": float(size),
+                    "divergence": float(signal_ctx.get("divergence", 0.0)),
+                    "imbalance": float(signal_ctx.get("imbalance", 0.0)),
+                    "age": float(signal_ctx.get("age", 0.0)),
+                }
+            )
+        except Exception:
+            pass
         print(
             f"ENTRY {direction} @{px:.2f} (size={size:.2f}) orderId={placed.get('orderId')}",
             flush=True,
         )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

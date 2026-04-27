@@ -1,8 +1,7 @@
 .env
 *.env
 
-logs/*
-!logs/.gitkeep
+logs/
 
 node_modules/
 **/node_modules/

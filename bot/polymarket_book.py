@@ -23,6 +23,18 @@ class BookReader:
         await self._spawn()
         asyncio.create_task(self._stale_watchdog())
 
+    async def stop(self) -> None:
+        proc = self._proc
+        self._proc = None
+        self._latest = None
+        self._last_update_time = None
+        if proc and proc.returncode is None:
+            proc.kill()
+            try:
+                await proc.communicate()
+            except Exception:
+                pass
+
     def latest(self) -> dict | None:
         return self._latest
 
