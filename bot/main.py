@@ -39,6 +39,7 @@ async def main() -> None:
     live = "--live" in sys.argv
     mode = "live" if live else "paper"
     print(f"MODE: {'LIVE' if live else 'PAPER'}", flush=True)
+    print("STRATEGY MODE: DOWN_ONLY_V1", flush=True)
 
     # Ensure wrapper subprocesses inherit credentials in live mode.
     if live:
@@ -210,6 +211,12 @@ async def main() -> None:
                         ):
                             d = {"action": "SKIP"}
                             decision_note = f"age out of range: {int(age_s)}s"
+                        elif (
+                            d_raw.get("action") == "ENTER"
+                            and d_raw.get("direction") == "UP"
+                        ):
+                            d = {"action": "SKIP"}
+                            decision_note = "UP trades disabled"
                         elif (
                             d_raw.get("action") == "ENTER"
                             and d_raw.get("direction") == "DOWN"

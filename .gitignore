@@ -1,3 +1,5 @@
+.DS_Store
+
 .env
 *.env
 
@@ -8,7 +10,6 @@ node_modules/
 
 __pycache__/
 *.pyc
+.pycache_tmp/
 .pytest_cache/
-
-.DS_Store
 

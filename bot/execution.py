@@ -215,6 +215,8 @@ async def handle_decision(
         direction = decision.get("direction")
         if direction not in ("UP", "DOWN"):
             return
+        if direction == "UP":
+            return
 
         token_ids = market.get("clob_token_ids")
         if not isinstance(token_ids, list) or len(token_ids) < 2:
