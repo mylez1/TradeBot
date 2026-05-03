@@ -40,6 +40,7 @@ async def main() -> None:
     mode = "live" if live else "paper"
     print(f"MODE: {'LIVE' if live else 'PAPER'}", flush=True)
     print("STRATEGY MODE: DOWN_ONLY_V1", flush=True)
+    print(f"STRATEGY VERSION: {config.STRATEGY_VERSION}", flush=True)
 
     # Ensure wrapper subprocesses inherit credentials in live mode.
     if live:

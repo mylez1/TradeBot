@@ -3,10 +3,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+import config
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _LOG_DIR = _REPO_ROOT / "logs"
-_TRADES_PATH = _LOG_DIR / "trades.jsonl"
+_TRADES_PATH = _LOG_DIR / f"trades_{config.STRATEGY_VERSION}.jsonl"
 _METRICS_PATH = _LOG_DIR / "metrics.jsonl"
 
 
@@ -33,6 +35,7 @@ def _write_jsonl(path: Path, obj: dict[str, Any]) -> None:
 
 
 def log_trade(event: dict[str, Any]) -> None:
+    event.setdefault("strategy_version", config.STRATEGY_VERSION)
     _write_jsonl(_TRADES_PATH, event)
 
 

@@ -114,6 +114,78 @@ async def handle_decision(
             return None
         return float(bids[0][0])
 
+    def book_context(direction: str) -> dict:
+        side = book.get("up") if direction == "UP" else book.get("down")
+        bids = side.get("bids") if isinstance(side, dict) else None
+        asks = side.get("asks") if isinstance(side, dict) else None
+
+        bid_px = None
+        ask_px = None
+        top_bid_size = 0.0
+        top_ask_size = 0.0
+        try:
+            if isinstance(bids, list) and bids:
+                bid_px = float(bids[0][0])
+                top_bid_size = float(bids[0][1])
+        except Exception:
+            bid_px = None
+            top_bid_size = 0.0
+        try:
+            if isinstance(asks, list) and asks:
+                ask_px = float(asks[0][0])
+                top_ask_size = float(asks[0][1])
+        except Exception:
+            ask_px = None
+            top_ask_size = 0.0
+
+        spread = None
+        mid_price = None
+        spread_bps = None
+        if bid_px is not None and ask_px is not None:
+            spread = max(0.0, ask_px - bid_px)
+            mid_price = (bid_px + ask_px) / 2.0
+            spread_bps = (spread / mid_price) * 10000.0 if mid_price > 0 else None
+
+        return {
+            "spread": spread,
+            "spread_bps": spread_bps,
+            "top_bid_size": float(top_bid_size),
+            "top_ask_size": float(top_ask_size),
+            "mid_price": mid_price,
+        }
+
+    def market_age() -> float:
+        try:
+            return max(0.0, float(now_ts) - (float(market["open_time_ms"]) / 1000.0))
+        except Exception:
+            return float(signal_ctx.get("age", 0.0))
+
+    def market_age_bucket(age: float) -> str:
+        bucket_start = int(age // 20) * 20
+        return f"{bucket_start}-{bucket_start + 20}"
+
+    def execution_log_context(direction: str, *, fill_attempt: int = 1) -> dict:
+        age = market_age()
+        return {
+            **book_context(direction),
+            "fill_attempt": int(fill_attempt),
+            "market_age_bucket": market_age_bucket(age),
+        }
+
+    def failure_type(reason: str) -> str:
+        reason_l = reason.lower()
+        if "not enough" in reason_l or "insufficient" in reason_l:
+            return "INSUFFICIENT_LIQUIDITY"
+        if "fok" in reason_l or "fill" in reason_l or "unfilled" in reason_l:
+            return "FOK_UNFILLED"
+        if "timeout" in reason_l:
+            return "ORDER_TIMEOUT"
+        if "wrapper failed" in reason_l:
+            return "ORDER_WRAPPER_FAILED"
+        if "empty stdout" in reason_l:
+            return "ORDER_WRAPPER_EMPTY_RESPONSE"
+        return "ORDER_REJECTED"
+
     # --- Exit logic ---
     if position is not None:
         if now_ts <= exit_cooldown_until:
@@ -182,6 +254,7 @@ async def handle_decision(
                         "pnl": float(pnl),
                         "result": "WIN" if pnl >= 0 else "LOSS",
                         "hold_seconds": float(hold_seconds),
+                        **execution_log_context(str(position["direction"])),
                         "divergence": float(
                             position.get("divergence", signal_ctx.get("divergence", 0.0))
                         ),
@@ -252,6 +325,7 @@ async def handle_decision(
 
         # After ANY entry attempt (success or failure), block new entries briefly.
         state["entry_cooldown_until"] = now_ts + 5.0
+        fill_attempt = 1
 
         try:
             resp = await _call_order_wrapper(
@@ -278,7 +352,10 @@ async def handle_decision(
                         "ts": float(now_ts),
                         "mode": mode,
                         "event": "ENTRY_FAILED",
+                        "direction": direction,
                         "reason": str(e),
+                        "failure_type": failure_type(str(e)),
+                        **execution_log_context(direction, fill_attempt=fill_attempt),
                     }
                 )
             except Exception:
@@ -293,12 +370,16 @@ async def handle_decision(
                 flush=True,
             )
             try:
+                failure_reason = str(placed.get("errorMsg", "") or "FOK unfilled")
                 log_trade(
                     {
                         "ts": float(now_ts),
                         "mode": mode,
                         "event": "ENTRY_FAILED",
-                        "reason": str(placed.get("errorMsg", "")),
+                        "direction": direction,
+                        "reason": failure_reason,
+                        "failure_type": failure_type(failure_reason),
+                        **execution_log_context(direction, fill_attempt=fill_attempt),
                     }
                 )
             except Exception:
@@ -327,6 +408,7 @@ async def handle_decision(
                     "direction": direction,
                     "price": float(px),
                     "size": float(size),
+                    **execution_log_context(direction, fill_attempt=fill_attempt),
                     "divergence": float(signal_ctx.get("divergence", 0.0)),
                     "imbalance": float(signal_ctx.get("imbalance", 0.0)),
                     "age": float(signal_ctx.get("age", 0.0)),
