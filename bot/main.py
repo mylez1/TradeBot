@@ -32,6 +32,32 @@ def _load_dotenv(path: str) -> None:
                 os.environ[k] = v
 
 
+def _spread_bps(book: dict, direction: str):
+    side = book.get("up") if direction == "UP" else book.get("down")
+    if not isinstance(side, dict):
+        return None
+
+    bids = side.get("bids")
+    asks = side.get("asks")
+    if not isinstance(bids, list) or not bids:
+        return None
+    if not isinstance(asks, list) or not asks:
+        return None
+
+    try:
+        bid_px = float(bids[0][0])
+        ask_px = float(asks[0][0])
+    except Exception:
+        return None
+
+    mid_price = (bid_px + ask_px) / 2.0
+    if mid_price <= 0:
+        return None
+
+    spread = max(0.0, ask_px - bid_px)
+    return (spread / mid_price) * 10000.0
+
+
 async def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     trade_engine_dir = repo_root / "trade-engine"
@@ -39,7 +65,7 @@ async def main() -> None:
     live = "--live" in sys.argv
     mode = "live" if live else "paper"
     print(f"MODE: {'LIVE' if live else 'PAPER'}", flush=True)
-    print("STRATEGY MODE: DOWN_ONLY_V1", flush=True)
+    print(f"STRATEGY MODE: {config.STRATEGY_VERSION}", flush=True)
     print(f"STRATEGY VERSION: {config.STRATEGY_VERSION}", flush=True)
 
     # Ensure wrapper subprocesses inherit credentials in live mode.
@@ -228,6 +254,15 @@ async def main() -> None:
                             decision_note = (
                                 f"imbalance too weak: {float(signals.get('imbalance', 0.0)):.2f}"
                             )
+                        elif (
+                            d_raw.get("action") == "ENTER"
+                            and d_raw.get("direction") in ("UP", "DOWN")
+                            and (spread_bps := _spread_bps(snap or {}, str(d_raw.get("direction"))))
+                            is not None
+                            and spread_bps > float(config.MAX_SPREAD_BPS) + EPSILON
+                        ):
+                            d = {"action": "SKIP"}
+                            decision_note = f"spread too wide: {spread_bps:.0f} bps"
                         else:
                             d = d_raw
 
